@@ -1,4 +1,4 @@
-# Envios Service — Análisis de Métricas de Calidad
+# Envios Service — Diagnóstico y Mejora Guiada por Métricas
 
 Post-contenido U10 · Patrones de Diseño de Software (UFPS). Proyecto Maven plano que calcula el costo de un envío según método, peso, distancia, fragilidad y tipo de cliente, analizado con SonarQube y JaCoCo.
 
@@ -9,6 +9,34 @@ docker run -d --name sonarqube -p 9000:9000 -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE
 mvn clean verify                                   # pruebas + target/site/jacoco/
 mvn clean verify sonar:sonar -Dsonar.token=TOKEN   # análisis en http://localhost:9000
 ```
+
+## Decisiones de diseño
+1. **Entorno de análisis:** SonarQube Community 26.11 local en Docker, por control total de perfiles y gates y porque no expone el proyecto en público; el costo es mantener el contenedor (unos 2 GB de RAM) ([detalle](#entorno-de-análisis)).
+2. **Exclusiones del análisis:** ninguna, porque todo `src/main/java` es lógica de negocio y no hay `Main` ni código generado ([detalle](#exclusiones-del-análisis)).
+3. **Métrica usada como señal principal:** complejidad ciclomática. Cuenta los caminos independientes que hay que probar, es lo que Strategy reduce y la baja cobertura es su síntoma ([detalle](#interpretación)).
+4. **Patrón elegido:** Strategy. No hay estado entre llamadas (descarta State) ni una cadena de manejadores donde importe el orden (descarta Chain). Cada rama es una fórmula de costo elegida una vez por `metodoEnvio` ([detalle](#decisión-de-diseño-4-patrón-elegido-strategy)).
+5. **Criterio de pruebas agregadas:** una prueba por cada rama roja o amarilla del JaCoCo inicial, con valores calculados a mano y casos en cada límite (5/20 kg, 300/500/5000 km) ([detalle](#decisión-de-diseño-5-criterio-de-las-pruebas-agregadas)).
+6. **Realismo del Quality Gate:** CC 10 por método (techo de "Moderada" en la Tabla 3.2 y valor por defecto de S1541) y cobertura del 70 % (100 % incentiva pruebas vacías) ([detalle](#decisión-de-diseño-6-quality-profile-quality-gate-y-realismo-del-umbral)).
+
+## Comparación antes / después
+
+| Métrica | Antes (Parte 1) | Después (Parte 2) |
+|---------|------------------|--------------------|
+| Complejidad ciclomática de `calcularCosto()` | 20 | **5** (−75 %) |
+| CC máxima por método en el proyecto | 20 | 5 (orquestador); 2 por estrategia; 3 en `RecargoPorPeso` |
+| Complejidad cognitiva de `ServicioCalculoEnvio` | 32 | 4 |
+| Cobertura de ramas de la lógica de envío | 18,4 % (7/38) | **100 %** (20/20), +81,6 pp |
+| Cobertura de líneas | 23,8 % | 100 % |
+| Pruebas | 2 | 32 |
+| Code Smells | 0 (perfil "Sonar way core", sin S1541 ni S3776) | 0 (perfil "Estándar Laboratorio", con S1541 ≤ 10) |
+| Líneas duplicadas | 0,0 % | 0,0 % (11,9 % en el primer intento del refactor) |
+| Quality Gate | Sonar way por defecto: Passed | "Estándar Laboratorio": Failed (duplicación) → **Passed** |
+
+Los valores "después" son del último análisis (`mvn clean verify sonar:sonar`). La CC por método sale del contador `COMPLEXITY` de `jacoco.xml`, porque SonarQube la agrega por archivo. En `RecargoPorPeso`, SonarQube reporta 4 porque suma el constructor privado.
+
+---
+
+# Parte 1: Diagnóstico con métricas reales
 
 ## Entorno de análisis
 
@@ -55,11 +83,6 @@ No es un error de lectura. En SonarQube 26.11, el perfil por defecto de Java es 
 - la cobertura baja es un síntoma de la CC alta y no al revés: subirla con más pruebas sin refactorizar dejaría un método con 20 caminos igual de frágil ante cambios;
 - la complejidad cognitiva (32) confirma el diagnóstico, porque penaliza el anidamiento de los `if`. Pero la Tabla 3.2 de la guía y la regla S1541 que se configura después trabajan con la ciclomática, así que esa es la que se compara antes y después.
 
-## Capturas del análisis inicial
-
-![Dashboard SonarQube](docs/sonar-dashboard-inicial.png)
-![Complejidad en SonarQube](docs/sonar-complejidad-inicial.png)
-![Reporte JaCoCo](docs/jacoco-inicial.png)
 
 ---
 
@@ -132,3 +155,35 @@ Cada prueba nueva corresponde a una rama que el reporte de JaCoCo de la Parte 1 
 **Por qué 70 % de cobertura, y no 100 %:** 100 % como exigencia es poco realista y genera incentivos perversos (Sección 2.3 de la guía): pruebas que llaman métodos sin verificar nada solo para llenar el número. 70 % es el mismo umbral de la línea `LINE` de JaCoCo en la guía y deja margen para código de infraestructura. Aquí la cobertura final llegó al 100 %, pero como **resultado** de cubrir cada rama con un valor verificado (Decisión 5), no como meta del gate. En un proyecto con clases de arranque o de configuración, el gate seguiría en 70 %.
 
 **Resultado del gate:** el primer análisis tras el refactor falló por `Duplicated Lines (%) = 11,9 % > 5 %` (ver `docs/sonar-dashboard-refactor-gate-fallido.png`). Tras extraer `RecargoPorPeso`, el análisis final **pasa** las 3 condiciones: cobertura 100 %, duplicación 0,0 % y 0 code smells nuevos.
+
+## Capturas
+
+**Análisis inicial (Parte 1)**
+
+![Dashboard inicial](docs/sonar-dashboard-inicial.png)
+![Complejidad inicial](docs/sonar-complejidad-inicial.png)
+![JaCoCo inicial](docs/jacoco-inicial.png)
+
+**Primer análisis tras el refactor: gate fallido por duplicación**
+
+![Gate fallido](docs/sonar-dashboard-refactor-gate-fallido.png)
+
+**Análisis final (Parte 2)**
+
+![Dashboard final](docs/sonar-dashboard-final.png)
+![Complejidad final](docs/sonar-complejidad-final.png)
+![JaCoCo final](docs/jacoco-final.png)
+
+**Configuración**
+
+![Quality Gate Estándar Laboratorio](docs/quality-gate-estandar-laboratorio.png)
+![Regla S1541 con umbral 10 en el perfil Estándar Laboratorio](docs/quality-profile-s1541.png)
+
+## Herramientas utilizadas
+- Java 21, Apache Maven 3.9, JUnit 5.11
+- SonarQube Community Build 26.11 (Docker), sonar-maven-plugin 5.1, JaCoCo 0.8.12
+- Git, GitHub
+
+## Conclusiones
+La complejidad ciclomática y la cobertura de ramas señalaron el mismo método porque concentrar todas las decisiones en un solo lugar multiplica los caminos que una suite tiene que recorrer. Por eso reducir la primera abarató la segunda. Elegir el patrón exigió mirar la naturaleza de los condicionales y no su forma: los 4 `if` sobre `metodoEnvio` se parecen a una cadena, pero sin orden ni estado son una selección, y eso es Strategy. El Quality Gate no fue un trámite final. Detectó que el primer refactor había movido la duplicación a las estrategias en lugar de eliminarla, y eso llevó a extraer `RecargoPorPeso`. También quedó claro que las herramientas cambian entre versiones: el perfil por defecto de SonarQube 26.11 no reportaba ningún code smell para un método con CC 20. Un dashboard en verde solo vale tanto como las reglas del perfil que lo produce.
+
