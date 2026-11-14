@@ -2,6 +2,7 @@
 
 Post-contenido U10 · Patrones de Diseño de Software (UFPS). Proyecto Maven plano que calcula el costo de un envío según método, peso, distancia, fragilidad y tipo de cliente, analizado con SonarQube y JaCoCo.
 
+## Link del repo: https://github.com/DavidRincon12/rincon_post1_u10
 ## Cómo ejecutarlo
 
 ```bash
