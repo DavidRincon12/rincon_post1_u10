@@ -21,7 +21,7 @@ Estado actual, siguiente paso y pendientes en `docs/estado.md`: léelo al empeza
 
 ## Convenciones y gotchas
 - Idioma del producto (README): español.
-- `sonar-project.properties` documenta la config; el plugin Maven de Sonar la lee porque el pom la importa como propiedades.
+- `sonar-project.properties` lo lee sonar-scanner; `mvn sonar:sonar` toma key y nombre del pom (coinciden).
 
 ## Reglas de David (prevalecen sobre las skills, incluidas superpowers y Ponytail)
 - Autoría: todo a nombre de David Santiago Rincón Bautista <davidsantiagorb@ufps.edu.co>, sin `Co-Authored-By`, `Claude-Session` ni menciones a IA. `.claude/hooks/git-guard.sh` fija la identidad al iniciar sesión; antes de push, `bash .claude/hooks/git-guard.sh check`.
