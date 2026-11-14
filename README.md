@@ -60,3 +60,75 @@ No es un error de lectura. En SonarQube 26.11, el perfil por defecto de Java es 
 ![Dashboard SonarQube](docs/sonar-dashboard-inicial.png)
 ![Complejidad en SonarQube](docs/sonar-complejidad-inicial.png)
 ![Reporte JaCoCo](docs/jacoco-inicial.png)
+
+---
+
+# Parte 2: Refactorización guiada por métricas
+
+## Decisión de diseño 4: patrón elegido, Strategy
+
+Se revisó cada condicional de `calcularCosto()` contra la tabla de la guía:
+
+| Pregunta | Respuesta en este método | Consecuencia |
+|---|---|---|
+| ¿Guarda estado entre llamadas que condicione el comportamiento futuro? | No. `ServicioCalculoEnvio` no tiene campos mutables: cada llamada depende solo de sus 5 parámetros. | **Descarta State**: no hay estado ni transiciones que modelar. |
+| ¿Hay una secuencia de responsables donde el orden importa y varios podrían aplicar? | No. `metodoEnvio` toma un solo valor y exactamente una rama aplica. Reordenar `ESTANDAR/EXPRESS/...` no cambia ningún resultado. | **Descarta Chain of Responsibility**: no hay cadena; hay una selección. |
+| ¿Cada rama calcula el mismo tipo de resultado con su propia fórmula, elegida una vez por un valor discreto? | Sí. Las 4 ramas devuelven un costo base a partir de `(pesoKg, distanciaKm)`, cada una con sus tarifas, recargos y límites. | **Strategy**: un algoritmo intercambiable por valor de `metodoEnvio`. |
+
+**Qué se movió y qué se quedó:**
+- **A las estrategias** (`estrategia/`): la fórmula de cada método, es decir, la tarifa por km, el cargo fijo, las tarifas por tramo de peso, el recargo por distancia (500 km o 5000 km), el factor 1,3 de EXPRESS y el rechazo de OVERNIGHT para más de 300 km.
+- **Se quedó en el orquestador** (`service/ServicioCalculoEnvio`): la selección (`Map<String, EstrategiaEnvio>`, que reemplaza la cadena `if/else if`), el rechazo de métodos no soportados, el recargo por fragilidad y los descuentos `PREMIUM/CORPORATIVO`. Esas reglas valen igual para los 4 métodos. Meterlas en cada estrategia duplicaría la misma lógica 4 veces, y un cambio en el descuento corporativo obligaría a tocar 4 clases.
+- **`RecargoPorPeso`**, una iteración guiada por el Quality Gate: el primer análisis tras el refactor marcó **11,9 % de líneas duplicadas** entre `EnvioEstandarStrategy` y `EnvioExpressStrategy` (12 líneas con la misma estructura de tramos y otros literales), por encima del 5 % del gate. Los tramos de peso (0-5, 5-20 y más de 20 kg) son la misma regla en los 4 métodos; solo cambian las tarifas. Por eso se extrajeron a un helper `package-private` y cada estrategia aporta sus dos tarifas. Con eso, cada estrategia quedó con CC 2 y la duplicación volvió a 0 %.
+
+Estructura final:
+
+```
+src/main/java/com/universidad/enviosservice/
+├── service/ServicioCalculoEnvio.java       ← orquestador (CC 5)
+└── estrategia/
+    ├── EstrategiaEnvio.java                ← interfaz común
+    ├── EnvioEstandarStrategy.java          ← CC 2
+    ├── EnvioExpressStrategy.java           ← CC 2
+    ├── EnvioOvernightStrategy.java         ← CC 2
+    ├── EnvioInternacionalStrategy.java     ← CC 2
+    └── RecargoPorPeso.java                 ← tramos de peso comunes (CC 3)
+```
+
+## Decisión de diseño 5: criterio de las pruebas agregadas
+
+Cada prueba nueva corresponde a una rama que el reporte de JaCoCo de la Parte 1 marcó en rojo o amarillo y verifica un valor distinto, calculado a mano desde la fórmula. Las pruebas en los límites (5 kg, 20 kg, 300 km, 500 km y 5000 km) son las que detectarían un `<=` cambiado por `<`.
+
+| Rama sin cubrir en la Parte 1 (línea del original) | Prueba que la ejercita |
+|---|---|
+| ESTANDAR `5 < peso ≤ 20` (12) y `peso > 20` (14) | `EnvioEstandarStrategyTest.calculaCostoPorTramoDePeso` (8 kg → 52,4; 25 kg → 68,0; límites 5 kg → 50 y 20 kg → 62) |
+| ESTANDAR `distancia > 500` (17) | `EnvioEstandarStrategyTest.aplicaRecargoSoloPorEncimaDe500Km` (500 km → 250 sin recargo; 600 km → 310) |
+| Selección y 3 tramos de EXPRESS (19-25) | `EnvioExpressStrategyTest.calculaCostoPorTramoDePeso` (156; 161,85; 198,25) |
+| EXPRESS `distancia > 500` y factor 1,3 (27-30) | `EnvioExpressStrategyTest.aplicaRecargoAntesDelFactorExpress` (500 km → 780; 600 km → 968,5: verifica que el +25 se suma antes del ×1,3) |
+| OVERNIGHT `distancia > 300` → excepción (32-33) | `EnvioOvernightStrategyTest.rechazaDistanciasMayoresA300Km` (301 km) y `aceptaExactamente300Km` (300 km → 620) |
+| 3 tramos de OVERNIGHT (35-40) | `EnvioOvernightStrategyTest.calculaCostoPorTramoDePeso` (220; 227,5; 272,5) |
+| 3 tramos de INTERNACIONAL (43-48) | `EnvioInternacionalStrategyTest.calculaCostoPorTramoDePeso` (230; 239; 297,5) |
+| INTERNACIONAL `distancia > 5000` (50-51) | `EnvioInternacionalStrategyTest.aplicaRecargoSoloPorEncimaDe5000Km` (5000 km → 9050; 6000 km → 10950) |
+| `else` de método no soportado (54) | `ServicioCalculoEnvioTest.rechazaMetodoDeEnvioNoSoportado` (también verifica el mensaje) |
+| `esFragil == true` (58) | `ServicioCalculoEnvioTest.aplicaRecargoDel15PorCientoSiEsFragil` (57,5) y `combinaFragilidadYDescuentoEnOrden` (51,75: recargo antes del descuento) |
+| `CORPORATIVO` (64) | `ServicioCalculoEnvioTest.aplicaDescuentoClienteCorporativo` (42,5) |
+| Selección de cada estrategia desde el servicio | `ServicioCalculoEnvioTest.delegaEnLaFormulaDeCadaMetodoDeEnvio` y `propagaElRechazoDeOvernightPorDistancia` |
+
+**Proceso:** las pruebas de `ServicioCalculoEnvioTest` se escribieron **antes** del refactor y pasaron con el método original (pruebas de caracterización). Así, el refactor se hizo con la red puesta: las 10 pasaron igual antes y después. Las pruebas de estrategias se escribieron antes que las clases y fallaron por no existir (rojo) hasta implementarlas (verde).
+
+**Corrección a la guía:** la guía da `25.0, 100.0, 250.0` para OVERNIGHT, pero su propia fórmula da `100·2,0 + 20 + 15·2,5 + 5·3,0 = 272,5`. La prueba usa 272,5, que es el comportamiento real del método original.
+
+## Decisión de diseño 6: Quality Profile, Quality Gate y realismo del umbral
+
+**Configuración aplicada en SonarQube:**
+- **Quality Profile "Estándar Laboratorio"** (Java): copia del perfil por defecto. En SonarQube 26.11 ese perfil se llama **"Sonar way core"**: el "Sonar way" que menciona la guía ya no existe con ese nombre. Sobre la copia se activó **S1541** ("Methods should not be too complex") con **Threshold = 10**, y el perfil se asignó a `envios-service`.
+- **Quality Gate "Estándar Laboratorio"**, asignado a `envios-service`, con 3 condiciones: `Coverage < 70 %`, `New Code Smells > 0` y `Duplicated Lines (%) > 5 %`.
+  - Al crear un gate, SonarQube 26.11 le agrega por su cuenta 4 condiciones "Clean as You Code" (`new_violations`, `new_coverage < 80`, `new_duplicated_lines_density > 3` y `new_security_hotspots_reviewed`). Se eliminaron para que el gate tenga exactamente las 3 condiciones definidas.
+  - La instancia corre en modo MQR (Multi-Quality Rule). `Code Smells` aparece marcada como métrica de la "Standard Experience": sigue funcionando, pero SonarQube sugiere migrarla a `new_maintainability_issues`. Se mantuvo para respetar la guía.
+
+**Por qué CC = 10 por método, y no 5 ni 20:** según la Tabla 3.2 de la guía, 10 es el techo del rango "Moderada" y además es el valor por defecto de la propia regla S1541. Es exigente sin forzar a reescribir métodos que todavía se mantienen bien.
+- Con 20, el método original (CC 20 exacto) **no** violaría la regla, y el umbral no detectaría justo el problema que motivó el laboratorio.
+- Con 5, el orquestador final (CC 5, todavía en "Moderada") quedaría en el borde, y cualquier regla de negocio nueva, como otro tipo de cliente, lo haría fallar. Eso empujaría a fragmentar el código solo para cumplir el número.
+
+**Por qué 70 % de cobertura, y no 100 %:** 100 % como exigencia es poco realista y genera incentivos perversos (Sección 2.3 de la guía): pruebas que llaman métodos sin verificar nada solo para llenar el número. 70 % es el mismo umbral de la línea `LINE` de JaCoCo en la guía y deja margen para código de infraestructura. Aquí la cobertura final llegó al 100 %, pero como **resultado** de cubrir cada rama con un valor verificado (Decisión 5), no como meta del gate. En un proyecto con clases de arranque o de configuración, el gate seguiría en 70 %.
+
+**Resultado del gate:** el primer análisis tras el refactor falló por `Duplicated Lines (%) = 11,9 % > 5 %` (ver `docs/sonar-dashboard-refactor-gate-fallido.png`). Tras extraer `RecargoPorPeso`, el análisis final **pasa** las 3 condiciones: cobertura 100 %, duplicación 0,0 % y 0 code smells nuevos.
